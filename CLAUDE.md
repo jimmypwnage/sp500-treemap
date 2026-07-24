@@ -6,18 +6,38 @@ price / DoD / WoW / index weight and a 3-line sparkline (ticker vs. sector vs.
 S&P 500, normalized 1-month daily return).
 
 ## Files
-- `fetch_data.py` — one-shot data pipeline. Writes `data.js`.
-- `index.html` — the treemap. Loads `data.js` (`window.SP500`). Open directly in a browser.
+- `fetch_data.py` — data pipeline. Writes `data.js`.
+- `refresh.py` — orchestrator: fetch_data → render `sp500.png` → git push to Pages.
+- `index.html` — the treemap. Loads `data.js` (`window.SP500`). Open directly or via Pages.
 - `data.js` — generated data (`window.SP500 = {...}`).
-- `closes.pkl` — cached daily closes (skips refetch if <4 days old).
+- `sp500.png` — rendered snapshot (gitignored; what the Telegram bot sends).
+- `closes.pkl` — cached daily closes (gitignored; skips refetch if <4 days old).
 - `mockup.html` — original standalone mockup with sample data (kept for reference).
+
+## Hosting — GitHub Pages (Telegram Mini App)
+- Repo: `jimmypwnage/sp500-treemap` (public). Live URL:
+  **https://jimmypwnage.github.io/sp500-treemap/**
+- Pages serves `index.html` + `data.js` from `main` branch root. Same URL always
+  shows the latest data — no per-run files.
+- This URL is opened as a Telegram **Mini App** via a `web_app` button in
+  FinancePapa (`/sp500`). Telegram requires public HTTPS; Pages provides it.
+- `git push` auth is via the `gh` credential helper (`gh auth setup-git`, done).
 
 ## Run
 ```bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-/Users/jimmyteoh/anaconda3/bin/python3 fetch_data.py   # regenerates data.js
+/Users/jimmyteoh/anaconda3/bin/python3 refresh.py    # fetch + render PNG + push (full)
+# or just regenerate data locally without publishing:
+/Users/jimmyteoh/anaconda3/bin/python3 fetch_data.py
 open index.html
 ```
+`refresh.py` is what FinancePapa runs daily at 06:00 SGT and on first `/sp500`.
+`publish()` pushes only when `data.js` actually changed (no-op otherwise).
+
+## PNG rendering
+Headless Chrome screenshots `index.html` (no Python deps): `--headless=new
+--force-device-scale-factor=2 --window-size=1600,1000 --virtual-time-budget=6000`.
+`file://` URL must percent-encode the spaces in the Google Drive path.
 
 ## Data sources (3 network calls — kept low to avoid Yahoo rate limits)
 1. **Wikipedia** — constituents + GICS sector. Needs a browser User-Agent header
