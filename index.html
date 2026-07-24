@@ -4,11 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>S&P 500 Treemap</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;}
   *{box-sizing:border-box;}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;}
   header{display:flex;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid var(--border);
     background:var(--panel);flex-wrap:wrap;}
   header h1{font-size:16px;font-weight:600;margin:0;letter-spacing:.3px;}
@@ -24,7 +26,15 @@
   .sector-label{position:absolute;top:0;left:0;right:0;height:18px;line-height:18px;
     font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;
     color:#c9d1d9;padding:0 6px;background:rgba(0,0,0,.35);z-index:2;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;}
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    pointer-events:auto;cursor:pointer;}
+  .sector-label:hover,.sector-label:active{background:rgba(0,0,0,.6);color:#fff;}
+  .backbar{position:absolute;top:0;left:0;right:0;height:32px;line-height:32px;z-index:6;
+    background:var(--panel);border-bottom:1px solid var(--border);color:var(--text);
+    font-size:13px;font-weight:600;padding:0 14px;cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .backbar .chev{color:#58a6ff;margin-right:4px;}
+  .backbar .sd{margin-left:8px;font-weight:600;font-variant-numeric:tabular-nums;}
   .tile{position:absolute;border:1px solid rgba(0,0,0,.55);overflow:hidden;
     display:flex;flex-direction:column;align-items:center;justify-content:center;
     text-align:center;color:#fff;line-height:1.15;}
@@ -128,51 +138,96 @@ function squarify(items,x,y,w,h){
   return out;
 }
 
+// ---- Telegram Mini App SDK (no-op outside Telegram) ----
+const TG=window.Telegram&&window.Telegram.WebApp;
+function haptic(kind){try{TG&&TG.HapticFeedback&&TG.HapticFeedback.impactOccurred(kind||'light');}catch(e){}}
+if(TG){try{
+  TG.ready();TG.expand();
+  TG.setBackgroundColor&&TG.setBackgroundColor('#0d1117');
+  TG.setHeaderColor&&TG.setHeaderColor('#161b22');
+  TG.disableVerticalSwipes&&TG.disableVerticalSwipes();
+}catch(e){}}
+
+const map=document.getElementById('map');
+let zoomedSector=null;   // null = full index; else a single sector name
+
+// group once
+const BY_SECTOR={};
+for(const r of STOCKS){
+  const o={ticker:r[0],sector:r[1],price:r[2],wt:r[3],dod:r[4],wow:r[5]};
+  (BY_SECTOR[o.sector]=BY_SECTOR[o.sector]||[]).push(o);
+}
+function sectorDod(sec){
+  let w=0,wd=0;for(const o of BY_SECTOR[sec]){const x=o.wt||0;w+=x;wd+=x*o.dod;}
+  return w?wd/w:0;
+}
+
+function makeTile(o,tx,ty,tw,th){
+  const d=document.createElement('div');d.className='tile';
+  d.style.cssText=`left:${tx}px;top:${ty}px;width:${tw}px;height:${th}px;background:${colorFor(o.dod)};`;
+  const area=tw*th;let html='';
+  if(area>260)html+=`<div class="tk">${o.ticker}</div>`;
+  if(area>2600)html+=`<div class="dp">${o.dod>=0?'+':''}${o.dod.toFixed(2)}%</div>`;
+  if(area>8000)html+=`<div class="pr">$${o.price}</div><div class="ww">W ${o.wow>=0?'+':''}${o.wow.toFixed(1)}%</div>`;
+  d.innerHTML=html;
+  d.style.fontSize=Math.max(7,Math.min(20,Math.sqrt(area)/7))+'px';
+  d.addEventListener('click',e=>tileTap(e,o));
+  d.addEventListener('mouseenter',e=>{if(!pinned)showTip(e,o);});
+  d.addEventListener('mousemove',e=>{if(!pinned)showTip(e,o);});
+  d.addEventListener('mouseleave',()=>{if(!pinned)hideTip();});
+  return d;
+}
+
 function build(){
-  const map=document.getElementById('map');map.innerHTML='';
+  hideTip();pinned=null;
+  map.innerHTML='';
   if(!STOCKS.length)return;
   const W=map.clientWidth,H=map.clientHeight;
-  const sizeMode='Index weight';   // fixed view (selectors removed)
-  const colorMode='DoD %';
-  CLAMP=clampFor(colorMode);
+  CLAMP=clampFor('DoD %');
+  if(zoomedSector){renderZoom(W,H);return;}
 
-  const bySector={};
-  for(const r of STOCKS){
-    const o={ticker:r[0],sector:r[1],price:r[2],wt:r[3],dod:r[4],wow:r[5]};
-    (bySector[o.sector]=bySector[o.sector]||[]).push(o);
-  }
-  const sectors=SECTOR_ORDER.filter(s=>bySector[s]).map(s=>({
-    name:s,value:bySector[s].reduce((a,b)=>a+(b.wt||0.01),0),items:bySector[s]}));
-
+  const sectors=SECTOR_ORDER.filter(s=>BY_SECTOR[s]).map(s=>({
+    name:s,value:BY_SECTOR[s].reduce((a,b)=>a+(b.wt||0.01),0),items:BY_SECTOR[s]}));
   for(const sr of squarify(sectors,0,0,W,H)){
     const [sx,sy,sw,sh]=sr.rect;
     const secDiv=document.createElement('div');secDiv.className='sector';
     secDiv.style.cssText=`left:${sx}px;top:${sy}px;width:${sw}px;height:${sh}px;`;
     const lbl=document.createElement('div');lbl.className='sector-label';lbl.textContent=sr.name;
+    lbl.addEventListener('click',e=>{e.stopPropagation();haptic();zoomedSector=sr.name;build();});
     secDiv.appendChild(lbl);
-    const items=sr.items.map(it=>({...it,value:sizeMode==='Equal'?1:(it.wt||0.005)}))
-                        .sort((a,b)=>b.value-a.value);
+    const items=sr.items.slice().sort((a,b)=>(b.wt||0)-(a.wt||0)).map(it=>({...it,value:it.wt||0.005}));
     const pad=1,top=18;
     for(const t of squarify(items,pad,top+pad,Math.max(1,sw-2*pad),Math.max(1,sh-top-2*pad))){
       const [tx,ty,tw,th]=t.rect;
-      const val=colorMode==='WoW %'?t.wow:t.dod;
-      const d=document.createElement('div');d.className='tile';
-      d.style.cssText=`left:${tx}px;top:${ty}px;width:${tw}px;height:${th}px;background:${colorFor(val)};`;
-      const area=tw*th;let html='';
-      if(area>260)html+=`<div class="tk">${t.ticker}</div>`;
-      if(area>2600)html+=`<div class="dp">${t.dod>=0?'+':''}${t.dod.toFixed(2)}%</div>`;
-      if(area>8000)html+=`<div class="pr">$${t.price}</div><div class="ww">W ${t.wow>=0?'+':''}${t.wow.toFixed(1)}%</div>`;
-      d.innerHTML=html;
-      d.style.fontSize=Math.max(7,Math.min(20,Math.sqrt(area)/7))+'px';
-      d.addEventListener('mousemove',e=>showTip(e,t));
-      d.addEventListener('mouseleave',hideTip);
-      secDiv.appendChild(d);
+      secDiv.appendChild(makeTile(t,tx,ty,tw,th));
     }
     map.appendChild(secDiv);
   }
 }
 
+function renderZoom(W,H){
+  const sec=zoomedSector,sd=sectorDod(sec);
+  const bar=document.createElement('div');bar.className='backbar';
+  bar.innerHTML=`<span class="chev">‹</span>All sectors &nbsp;·&nbsp; ${sec}`
+    +` <span class="sd" style="color:${sd>=0?'#3fb950':'#f85149'}">${sd>=0?'+':''}${sd.toFixed(2)}%</span>`;
+  bar.addEventListener('click',e=>{e.stopPropagation();haptic();zoomedSector=null;build();});
+  map.appendChild(bar);
+  const top=32;
+  const items=BY_SECTOR[sec].slice().sort((a,b)=>(b.wt||0)-(a.wt||0)).map(it=>({...it,value:it.wt||0.005}));
+  for(const t of squarify(items,0,top,W,Math.max(1,H-top))){
+    const [tx,ty,tw,th]=t.rect;
+    map.appendChild(makeTile(t,tx,ty,tw,th));
+  }
+}
+
+// ---- tooltip: tap to pin (mobile) + hover preview (desktop) ----
 const tt=document.getElementById('tt');
+let pinned=null;   // ticker currently pinned, or null
+function tileTap(e,o){
+  e.stopPropagation();haptic();
+  if(pinned===o.ticker){hideTip();pinned=null;return;}
+  pinned=o.ticker;showTip(e,o);
+}
 function showTip(e,t){
   tt.style.display='block';
   tt.innerHTML=`<b>${t.ticker}</b> &nbsp;<span style="color:#8b949e">${t.sector}</span>
@@ -181,13 +236,16 @@ function showTip(e,t){
     <div class="row"><span>WoW</span><span>${t.wow>=0?'+':''}${t.wow.toFixed(2)}%</span></div>
     <div class="row"><span>Index wt</span><span>${t.wt!=null?t.wt.toFixed(3)+'%':'—'}</span></div>
     ${sparkline(t.ticker,t.sector)}`;
-  const w=224,h=190,pad=14;
-  let x=e.clientX+pad,y=e.clientY+pad;
-  if(x+w>window.innerWidth)x=e.clientX-w-pad;
-  if(y+h>window.innerHeight)y=e.clientY-h-pad;
+  const w=224,h=210,pad=14;
+  const px=e&&e.clientX!=null?e.clientX:window.innerWidth/2;
+  const py=e&&e.clientY!=null?e.clientY:window.innerHeight/2;
+  let x=px+pad,y=py+pad;
+  if(x+w>window.innerWidth)x=px-w-pad;
+  if(y+h>window.innerHeight)y=py-h-pad;
   tt.style.left=Math.max(4,x)+'px';tt.style.top=Math.max(4,y)+'px';
 }
 function hideTip(){tt.style.display='none';}
+document.addEventListener('click',()=>{hideTip();pinned=null;});
 
 if(D){
   document.getElementById('asof').textContent=
