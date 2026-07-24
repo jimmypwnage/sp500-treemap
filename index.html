@@ -42,11 +42,6 @@
 <header>
   <h1>S&amp;P 500</h1>
   <span class="sub" id="asof"></span>
-  <div class="controls">
-    <label>Size <select id="sizeSel"><option>Index weight</option><option>Equal</option></select></label>
-    <label>Color <select id="colorSel"><option>DoD %</option><option>WoW %</option></select></label>
-    <div class="legend"><span id="legLo">−3%</span><div class="bar"></div><span id="legHi">+3%</span></div>
-  </div>
 </header>
 <div id="map"><div id="err">Loading data…</div></div>
 <div class="tt" id="tt"></div>
@@ -137,11 +132,9 @@ function build(){
   const map=document.getElementById('map');map.innerHTML='';
   if(!STOCKS.length)return;
   const W=map.clientWidth,H=map.clientHeight;
-  const sizeMode=document.getElementById('sizeSel').value;
-  const colorMode=document.getElementById('colorSel').value;
+  const sizeMode='Index weight';   // fixed view (selectors removed)
+  const colorMode='DoD %';
   CLAMP=clampFor(colorMode);
-  document.getElementById('legLo').textContent='−'+CLAMP+'%';
-  document.getElementById('legHi').textContent='+'+CLAMP+'%';
 
   const bySector={};
   for(const r of STOCKS){
@@ -199,8 +192,6 @@ function hideTip(){tt.style.display='none';}
 if(D){
   document.getElementById('asof').textContent=
     `as of ${D.asOf} · ${STOCKS.length} names · ${D.window} · generated ${D.generated||''}`;
-  document.getElementById('sizeSel').addEventListener('change',build);
-  document.getElementById('colorSel').addEventListener('change',build);
   window.addEventListener('resize',build);
   build();
 }
