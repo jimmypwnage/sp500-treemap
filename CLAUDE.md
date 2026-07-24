@@ -8,7 +8,15 @@ S&P 500, normalized 1-month daily return).
 ## Files
 - `fetch_data.py` — data pipeline. Writes `data.js`.
 - `refresh.py` — orchestrator: fetch_data → render `sp500.png` → git push to Pages.
+- `sp500_summary.py` — reads `data.js` → market DoD summary for the morning brief
+  (`build_summary`, `caption_html`, `show_market_section` freshness gate). Imported
+  in-process by ButlerPapa (SP500_DIR on sys.path); reuses `refresh.latest_us_session`.
 - `index.html` — the treemap. Loads `data.js` (`window.SP500`). Open directly or via Pages.
+  Mini-App-tuned: loads `telegram-web-app.js` (calls `ready()`/`expand()`/`disableVerticalSwipes()`
+  + sets header/bg colour — all no-ops outside Telegram); **tap a tile** to pin its tooltip+sparkline
+  (hover still previews on desktop), tap elsewhere to dismiss; **tap a sector header to zoom** into
+  that sector (bigger, readable tiles) with a `‹ All sectors` back bar; haptic feedback on taps.
+  Size/colour are fixed (index weight + DoD %); the selectors/legend were removed.
 - `data.js` — generated data (`window.SP500 = {...}`).
 - `sp500.png` — rendered snapshot (gitignored; what the Telegram bot sends).
 - `closes.pkl` — cached daily closes (gitignored; skips refetch if <4 days old).
@@ -26,13 +34,26 @@ S&P 500, normalized 1-month daily return).
 ## Run
 ```bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-/Users/jimmyteoh/anaconda3/bin/python3 refresh.py    # fetch + render PNG + push (full)
-# or just regenerate data locally without publishing:
-/Users/jimmyteoh/anaconda3/bin/python3 fetch_data.py
+/Users/jimmyteoh/anaconda3/bin/python3 refresh.py            # guarded: skips if no new session
+/Users/jimmyteoh/anaconda3/bin/python3 refresh.py --force    # ignore guard, always rebuild
+/Users/jimmyteoh/anaconda3/bin/python3 fetch_data.py         # data only, no PNG/publish
 open index.html
 ```
-`refresh.py` is what FinancePapa runs daily at 06:00 SGT and on first `/sp500`.
-`publish()` pushes only when `data.js` actually changed (no-op otherwise).
+
+## Refresh triggers + market guard
+- **Daily refresh lives in ButlerPapa** (`core/scheduler.py` job `sp500_refresh`, 06:30 SGT,
+  just before the 7am brief). Registered via ButlerPapa's `_wrap`, so a genuine failure
+  pings the owner automatically; a guard-skip is silent.
+- **FinancePapa `/sp500`** only builds **on demand** when no `sp500.png` exists yet, and calls
+  `refresh.py --force` so it always works (even on a weekend).
+- **`should_refresh()`** computes the latest completed NYSE session (US/Eastern + `holidays`
+  NYSE calendar) and compares to the `asOf` date already in `data.js`. If there's no newer
+  session it **returns before any network call** — this covers weekends AND US holidays.
+  Net effect on the 06:30 SGT schedule: refreshes **Tue–Sat SGT** (Mon–Fri US sessions),
+  skips **Sun/Mon SGT** and the morning after a US holiday.
+- `publish()` pushes only when `data.js` actually changed (no-op otherwise).
+- `--force` (or `refresh(force=True)`) bypasses the guard — used by the on-demand build.
+- Dep: `holidays` (`holidays.financial_holidays("NYSE")`) + stdlib `zoneinfo`.
 
 ## PNG rendering
 Headless Chrome screenshots `index.html` (no Python deps): `--headless=new

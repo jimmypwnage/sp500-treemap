@@ -3,15 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>S&P 500 Treemap</title>
+<title>S&P 500 · 6-month Alpha</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="treemap.css">
 </head>
 <body>
-<header><h1>S&amp;P 500</h1><span class="sub" id="asof"></span></header>
+<header><h1>S&amp;P 500</h1><span class="metric" id="metric"></span><span class="sub" id="asof"></span>
+<nav class="chart-nav" id="nav"></nav></header>
 <div id="map"><div id="err">Loading data…</div></div>
 <div class="tt" id="tt"></div>
-<script>window.CHART='dod';</script>
+<script>window.CHART='alpha6m';window.NAV=true;</script>
 <script src="data.js"></script>
 <script src="treemap.js"></script>
 </body>
