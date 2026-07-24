@@ -1,9 +1,10 @@
 # S&P 500 Treemap
 
 Finviz-style heatmap of the S&P 500. Tiles grouped by GICS sector, sized by
-index weight, colored by day-over-day % change. Hover shows a tooltip with
-price / DoD / WoW / index weight and a 3-line sparkline (ticker vs. sector vs.
-S&P 500, normalized 1-month daily return).
+index weight. **Seven pages**, one shared engine: the default colours by day-over-day %
+change; six analytical pages colour by risk-adjusted metrics (3m/6m Sharpe, Sortino, Alpha).
+Tap a tile for a rich tooltip (3m/6m Sharpe/Sortino/Alpha/Beta/Vol grid + a ticker-vs-sector-
+vs-S&P sparkline); tap a sector header to zoom in. Built as a Telegram Mini App.
 
 ## Files
 - `fetch_data.py` — data pipeline. Writes `data.js`.
@@ -11,13 +12,19 @@ S&P 500, normalized 1-month daily return).
 - `sp500_summary.py` — reads `data.js` → market DoD summary for the morning brief
   (`build_summary`, `caption_html`, `show_market_section` freshness gate). Imported
   in-process by ButlerPapa (SP500_DIR on sys.path); reuses `refresh.latest_us_session`.
-- `index.html` — the treemap. Loads `data.js` (`window.SP500`). Open directly or via Pages.
-  Mini-App-tuned: loads `telegram-web-app.js` (calls `ready()`/`expand()`/`disableVerticalSwipes()`
-  + sets header/bg colour — all no-ops outside Telegram); **tap a tile** to pin its tooltip+sparkline
-  (hover still previews on desktop), tap elsewhere to dismiss; **tap a sector header to zoom** into
-  that sector (bigger, readable tiles) with a `‹ All sectors` back bar; haptic feedback on taps.
-  Size/colour are fixed (index weight + DoD %); the selectors/legend were removed.
-- `data.js` — generated data (`window.SP500 = {...}`).
+- `treemap.js` + `treemap.css` — **shared rendering engine** used by all pages. A page
+  sets `window.CHART=<metric key>` (+ optional `window.NAV=true`) before loading data.js +
+  treemap.js. Engine handles: colour (adaptive diverging clamp), squarify layout, tap-to-pin
+  tooltip (hover preview on desktop), sector drill-down (tap header → zoom, `‹ All sectors`
+  back bar), Telegram SDK (`ready`/`expand`/`disableVerticalSwipes`/haptics — no-ops outside
+  Telegram), and the nav pills. Metric registry `MET` maps key→tuple index+label+formatter.
+- **Pages** (each a thin HTML that sets `window.CHART`):
+  - `index.html` — DoD %, **no nav** (kept clean so the bot `sp500.png` is uncluttered).
+  - `sharpe-3m/6m.html`, `sortino-3m/6m.html`, `alpha-3m/6m.html` — analytical views, `NAV=true`
+    (nav pill row to switch between all 7).
+- `data.js` — generated data (`window.SP500 = {...}`). **Stock tuple (16 fields):**
+  `[tkr, sec, price, wt, dod, wow, sh3, sh6, sortino3, sortino6, alpha3, alpha6, beta3, beta6, vol3, vol6]`.
+  Anything parsing it (e.g. `sp500_summary.py`) must use **index access**, not 6-tuple unpacking.
 - `sp500.png` — rendered snapshot (gitignored; what the Telegram bot sends).
 - `closes.pkl` — cached daily closes (gitignored; skips refetch if <4 days old).
 - `mockup.html` — original standalone mockup with sample data (kept for reference).
@@ -66,8 +73,21 @@ Headless Chrome screenshots `index.html` (no Python deps): `--headless=new
 2. **Slickcharts** (`/sp500`) — index weight per ticker (tile size; ∝ market cap).
    One request instead of ~500 per-ticker `fast_info` calls. Weight column is
    `Portfolio%` (fallback `Weight`).
-3. **yfinance** — one bulk `yf.download` of ~1 month daily closes + `^GSPC`
-   (`auto_adjust=True`). Series/DoD/WoW/sector lines all derived from this.
+3. **yfinance** — one bulk `yf.download` of **~8 months** daily closes + `^GSPC` + `^IRX`
+   (`auto_adjust=True`). Everything below is derived from this one download.
+
+## Chart metrics (per stock, from daily returns)
+All tiles are sized by index weight; each page colours by one metric (diverging red↔green at 0,
+adaptive 92nd-pct clamp). Windows: **3m = last 63 trading days, 6m = 126**. Annualized ×√252.
+Risk-free = latest **^IRX** (13-week T-bill) yield → `rf_daily = IRX/100/252` (falls back to 0).
+- **Sharpe** = `mean(r − rf) / std(r) × √252`.
+- **Sortino** = `mean(r − rf) / downside_dev × √252`, `downside_dev = sqrt(mean(min(0, r−rf)²))`.
+- **Alpha** (CAPM/Jensen, vs ^GSPC) = regression intercept of daily excess returns, ×252 → % ann.
+  **Beta** = the regression slope (shown in tooltip, not its own page).
+- **Volatility** = `std(r) × √252` %, shown in the tooltip (3m + 6m).
+- DoD/WoW + the ~1-month sparkline (`SPARK_N=22`) come from the tail of the same series.
+Tooltip shows a 3m/6m grid of all five metrics; the current page's metric row is highlighted.
+`fetch_data.py`: `HIST_DAYS`, `W3/W6`, `SPARK_N`, `window_metrics()` are the knobs.
 
 ## Gotchas
 - Do NOT fetch market caps via per-ticker `Ticker.fast_info` in a loop — 500
