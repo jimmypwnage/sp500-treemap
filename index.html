@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S&P 500 Treemap</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;}
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{display:flex;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid var(--border);
+    background:var(--panel);flex-wrap:wrap;}
+  header h1{font-size:16px;font-weight:600;margin:0;letter-spacing:.3px;}
+  header .sub{color:var(--muted);font-size:12px;}
+  .controls{margin-left:auto;display:flex;gap:14px;align-items:center;font-size:12px;color:var(--muted);}
+  .controls select{background:#0d1117;color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:4px 8px;font-size:12px;}
+  .legend{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);}
+  .legend .bar{width:200px;height:12px;border-radius:3px;
+    background:linear-gradient(90deg,#7a1616,#b23434,#3d4450,#2f9e5c,#128a3d);}
+  #map{position:relative;width:100%;height:calc(100% - 56px);}
+  .sector{position:absolute;overflow:hidden;}
+  .sector-label{position:absolute;top:0;left:0;right:0;height:18px;line-height:18px;
+    font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;
+    color:#c9d1d9;padding:0 6px;background:rgba(0,0,0,.35);z-index:2;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;}
+  .tile{position:absolute;border:1px solid rgba(0,0,0,.55);overflow:hidden;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;color:#fff;line-height:1.15;}
+  .tile:hover{outline:2px solid #fff;outline-offset:-2px;z-index:5;}
+  .tk{font-weight:700;}.pr{opacity:.9;}.dp{font-weight:600;}.ww{opacity:.85;}
+  .tt{position:fixed;pointer-events:none;z-index:50;background:#000;border:1px solid var(--border);
+    border-radius:8px;padding:8px 10px;font-size:12px;min-width:200px;display:none;box-shadow:0 6px 20px rgba(0,0,0,.5);}
+  .tt b{font-size:13px;}
+  .tt .row{display:flex;justify-content:space-between;gap:16px;color:var(--muted);}
+  .tt .row span:last-child{color:var(--text);font-variant-numeric:tabular-nums;}
+  #err{padding:40px;color:var(--muted);font-size:14px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>S&amp;P 500</h1>
+  <span class="sub" id="asof"></span>
+  <div class="controls">
+    <label>Size <select id="sizeSel"><option>Index weight</option><option>Equal</option></select></label>
+    <label>Color <select id="colorSel"><option>DoD %</option><option>WoW %</option></select></label>
+    <div class="legend"><span id="legLo">−3%</span><div class="bar"></div><span id="legHi">+3%</span></div>
+  </div>
+</header>
+<div id="map"><div id="err">Loading data…</div></div>
+<div class="tt" id="tt"></div>
+
+<script src="data.js"></script>
+<script>
+const SECTOR_ORDER=["Information Technology","Communication Services","Consumer Discretionary","Financials",
+  "Health Care","Consumer Staples","Industrials","Energy","Utilities","Materials","Real Estate"];
+
+const D=window.SP500;
+if(!D||!D.stocks){document.getElementById('err').textContent="data.js not found or empty — run fetch_data.py.";}
+
+// stock tuple: [ticker, sector, price, weight, dod, wow]
+const STOCKS=(D&&D.stocks)||[];
+const SERIES=(D&&D.series)||{};
+const SECTOR_SERIES=(D&&D.sectorSeries)||{};
+const SPX_SERIES=(D&&D.spxSeries)||[];
+
+// ---- adaptive color clamp: 92nd percentile of |value| across whole index ----
+function clampFor(mode){
+  const idx=mode==='WoW %'?5:4;
+  const vals=STOCKS.map(s=>Math.abs(s[idx])).filter(v=>isFinite(v)).sort((a,b)=>a-b);
+  if(!vals.length)return 3;
+  const p=vals[Math.floor(vals.length*0.92)]||vals[vals.length-1];
+  return Math.max(0.5,Math.round(p*10)/10);
+}
+let CLAMP=3;
+function lerp(a,b,t){return a+(b-a)*t;}
+function colorFor(v){
+  const c=Math.max(-CLAMP,Math.min(CLAMP,v))/CLAMP;
+  const g=[61,68,80];let r,gr,b;
+  if(c<0){const t=-c;r=lerp(g[0],140,t);gr=lerp(g[1],28,t);b=lerp(g[2],28,t);}
+  else{const t=c;r=lerp(g[0],18,t);gr=lerp(g[1],150,t);b=lerp(g[2],70,t);}
+  return `rgb(${r|0},${gr|0},${b|0})`;
+}
+
+// ---- sparkline ----
+function sparkline(ticker,sector){
+  const a=SERIES[ticker],b=SECTOR_SERIES[sector],c=SPX_SERIES;
+  if(!a||!a.length)return'';
+  const N=a.length;
+  const lines=[a,b,c].filter(Boolean);
+  const all=[].concat(...lines);
+  let mn=Math.min(...all),mx=Math.max(...all);
+  if(mx-mn<1e-6){mx+=0.01;mn-=0.01;}
+  const W=200,H=54,pad=3;
+  const X=i=>pad+i*(W-2*pad)/(N-1);
+  const Y=v=>pad+(1-(v-mn)/(mx-mn))*(H-2*pad);
+  const path=s=>s.map((v,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' ');
+  const zeroY=Y(0).toFixed(1);
+  const secPath=b?`<path d="${path(b)}" fill="none" stroke="#d29922" stroke-width="1.2" opacity=".9"/>`:'';
+  const spxPath=c&&c.length?`<path d="${path(c)}" fill="none" stroke="#8b949e" stroke-width="1" stroke-dasharray="3 2" opacity=".8"/>`:'';
+  const last=v=>((v>=0?'+':'')+(v*100).toFixed(1)+'%');
+  return `<svg width="${W}" height="${H}" style="display:block;margin-top:6px">
+    <line x1="${pad}" y1="${zeroY}" x2="${W-pad}" y2="${zeroY}" stroke="#30363d" stroke-dasharray="2 2"/>
+    ${spxPath}${secPath}
+    <path d="${path(a)}" fill="none" stroke="#58a6ff" stroke-width="1.8"/></svg>
+  <div style="display:flex;gap:10px;font-size:10px;margin-top:2px">
+    <span style="color:#58a6ff">— ${ticker} ${last(a[N-1])}</span>
+    ${b?`<span style="color:#d29922">— Sector</span>`:''}
+    ${c&&c.length?`<span style="color:#8b949e">-- S&amp;P ${last(c[c.length-1])}</span>`:''}
+  </div>`;
+}
+
+// ---- squarified treemap ----
+function squarify(items,x,y,w,h){
+  const total=items.reduce((s,i)=>s+i.value,0)||1;
+  const scale=(w*h)/total;
+  const norm=items.map(i=>({...i,area:i.value*scale}));
+  const out=[];let rx=x,ry=y,rw=w,rh=h,row=[],i=0;
+  const worst=(row,len)=>{const s=row.reduce((a,b)=>a+b.area,0);
+    const mx=Math.max(...row.map(r=>r.area)),mn=Math.min(...row.map(r=>r.area));
+    return Math.max((len*len*mx)/(s*s),(s*s)/(len*len*mn));};
+  function layoutRow(row,len,horiz){const s=row.reduce((a,b)=>a+b.area,0),thick=s/len;let off=0;
+    for(const r of row){const cell=r.area/thick;
+      if(horiz){out.push({...r,rect:[rx,ry+off,thick,cell]});off+=cell;}
+      else{out.push({...r,rect:[rx+off,ry,cell,thick]});off+=cell;}}
+    if(horiz){rx+=thick;rw-=thick;}else{ry+=thick;rh-=thick;}}
+  while(i<norm.length){const horiz=rw>=rh;const len=horiz?rh:rw;const cur=norm[i];
+    if(row.length===0){row.push(cur);i++;continue;}
+    if(worst(row,len)>=worst([...row,cur],len)){row.push(cur);i++;}
+    else{layoutRow(row,len,horiz);row=[];}}
+  if(row.length){const horiz=rw>=rh;layoutRow(row,horiz?rh:rw,horiz);}
+  return out;
+}
+
+function build(){
+  const map=document.getElementById('map');map.innerHTML='';
+  if(!STOCKS.length)return;
+  const W=map.clientWidth,H=map.clientHeight;
+  const sizeMode=document.getElementById('sizeSel').value;
+  const colorMode=document.getElementById('colorSel').value;
+  CLAMP=clampFor(colorMode);
+  document.getElementById('legLo').textContent='−'+CLAMP+'%';
+  document.getElementById('legHi').textContent='+'+CLAMP+'%';
+
+  const bySector={};
+  for(const r of STOCKS){
+    const o={ticker:r[0],sector:r[1],price:r[2],wt:r[3],dod:r[4],wow:r[5]};
+    (bySector[o.sector]=bySector[o.sector]||[]).push(o);
+  }
+  const sectors=SECTOR_ORDER.filter(s=>bySector[s]).map(s=>({
+    name:s,value:bySector[s].reduce((a,b)=>a+(b.wt||0.01),0),items:bySector[s]}));
+
+  for(const sr of squarify(sectors,0,0,W,H)){
+    const [sx,sy,sw,sh]=sr.rect;
+    const secDiv=document.createElement('div');secDiv.className='sector';
+    secDiv.style.cssText=`left:${sx}px;top:${sy}px;width:${sw}px;height:${sh}px;`;
+    const lbl=document.createElement('div');lbl.className='sector-label';lbl.textContent=sr.name;
+    secDiv.appendChild(lbl);
+    const items=sr.items.map(it=>({...it,value:sizeMode==='Equal'?1:(it.wt||0.005)}))
+                        .sort((a,b)=>b.value-a.value);
+    const pad=1,top=18;
+    for(const t of squarify(items,pad,top+pad,Math.max(1,sw-2*pad),Math.max(1,sh-top-2*pad))){
+      const [tx,ty,tw,th]=t.rect;
+      const val=colorMode==='WoW %'?t.wow:t.dod;
+      const d=document.createElement('div');d.className='tile';
+      d.style.cssText=`left:${tx}px;top:${ty}px;width:${tw}px;height:${th}px;background:${colorFor(val)};`;
+      const area=tw*th;let html='';
+      if(area>260)html+=`<div class="tk">${t.ticker}</div>`;
+      if(area>2600)html+=`<div class="dp">${t.dod>=0?'+':''}${t.dod.toFixed(2)}%</div>`;
+      if(area>8000)html+=`<div class="pr">$${t.price}</div><div class="ww">W ${t.wow>=0?'+':''}${t.wow.toFixed(1)}%</div>`;
+      d.innerHTML=html;
+      d.style.fontSize=Math.max(7,Math.min(20,Math.sqrt(area)/7))+'px';
+      d.addEventListener('mousemove',e=>showTip(e,t));
+      d.addEventListener('mouseleave',hideTip);
+      secDiv.appendChild(d);
+    }
+    map.appendChild(secDiv);
+  }
+}
+
+const tt=document.getElementById('tt');
+function showTip(e,t){
+  tt.style.display='block';
+  tt.innerHTML=`<b>${t.ticker}</b> &nbsp;<span style="color:#8b949e">${t.sector}</span>
+    <div class="row"><span>Price</span><span>$${t.price}</span></div>
+    <div class="row"><span>DoD</span><span>${t.dod>=0?'+':''}${t.dod.toFixed(2)}%</span></div>
+    <div class="row"><span>WoW</span><span>${t.wow>=0?'+':''}${t.wow.toFixed(2)}%</span></div>
+    <div class="row"><span>Index wt</span><span>${t.wt!=null?t.wt.toFixed(3)+'%':'—'}</span></div>
+    ${sparkline(t.ticker,t.sector)}`;
+  const w=224,h=190,pad=14;
+  let x=e.clientX+pad,y=e.clientY+pad;
+  if(x+w>window.innerWidth)x=e.clientX-w-pad;
+  if(y+h>window.innerHeight)y=e.clientY-h-pad;
+  tt.style.left=Math.max(4,x)+'px';tt.style.top=Math.max(4,y)+'px';
+}
+function hideTip(){tt.style.display='none';}
+
+if(D){
+  document.getElementById('asof').textContent=
+    `as of ${D.asOf} · ${STOCKS.length} names · ${D.window} · generated ${D.generated||''}`;
+  document.getElementById('sizeSel').addEventListener('change',build);
+  document.getElementById('colorSel').addEventListener('change',build);
+  window.addEventListener('resize',build);
+  build();
+}
+</script>
+</body>
+</html>

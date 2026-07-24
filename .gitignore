@@ -1,0 +1,6 @@
+closes.pkl
+_preview.html
+__pycache__/
+*.pyc
+.DS_Store
+sp500.png
