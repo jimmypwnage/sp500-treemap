@@ -15,6 +15,10 @@ Risk-free rate = latest ^IRX (13-week T-bill) yield; falls back to 0.
 
 Outputs data.js (window.SP500) consumed by the treemap pages.
 Daily closes are cached to closes.pkl so reruns don't refetch.
+
+Everything is gated on market_calendar.latest_us_session() — the cache expires
+against it and downloaded bars are truncated to it, so a run during US market
+hours can never record an intraday quote as a close.
 """
 import json, sys, os, datetime as dt
 from io import StringIO
@@ -23,6 +27,8 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import yfinance as yf
+
+from market_calendar import latest_us_session
 
 HIST_DAYS = 260      # calendar days to pull (~176 trading days; covers 6m + buffer)
 SPARK_N   = 22       # trading days in the tooltip sparkline (~1 month)
@@ -62,24 +68,37 @@ def get_weights():
 
 
 # ---------------------------------------------------------------- prices
-def get_closes(yf_tickers, use_cache=True):
+def get_closes(yf_tickers, cutoff, use_cache=True):
+    """Daily closes through `cutoff` (the latest completed NYSE session).
+
+    The cache is reused only when it already holds `cutoff` — never on a
+    wall-clock day count, which says nothing about whether a session closed.
+    Downloaded rows are truncated to `cutoff` so an in-progress session's
+    partial bar is never stored as that day's close.
+    """
     if use_cache and os.path.exists(CACHE):
         closes = pd.read_pickle(CACHE)
         enough = closes.shape[0] >= W6 + 5
-        if enough and (dt.date.today() - closes.index[-1].date()).days <= 4:
-            print(f"[prices] cache hit: {closes.shape}", file=sys.stderr)
+        if enough and closes.index[-1].date() >= cutoff:
+            print(f"[prices] cache hit: {closes.shape} (through {closes.index[-1].date()})",
+                  file=sys.stderr)
             return closes
-    end = dt.date.today() + dt.timedelta(days=1)
+    end = cutoff + dt.timedelta(days=1)
     start = end - dt.timedelta(days=HIST_DAYS)
     data = yf.download(yf_tickers + ["^GSPC", "^IRX"], start=start.isoformat(),
                        end=end.isoformat(), interval="1d", auto_adjust=True,
                        progress=False, threads=True)
     closes = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data
     closes = closes.dropna(how="all")
+    closes = closes[closes.index.date <= cutoff]   # drop any in-progress session
     if closes.shape[0] == 0:
         sys.exit("[prices] EMPTY download (rate limited?). Wait and rerun.")
+    if closes.index[-1].date() < cutoff:
+        print(f"[prices] WARNING: upstream has no bar for {cutoff} "
+              f"(latest {closes.index[-1].date()})", file=sys.stderr)
     closes.to_pickle(CACHE)
-    print(f"[prices] {closes.shape[0]} trading days, {closes.shape[1]} symbols", file=sys.stderr)
+    print(f"[prices] {closes.shape[0]} trading days, {closes.shape[1]} symbols "
+          f"(through {closes.index[-1].date()})", file=sys.stderr)
     return closes
 
 
@@ -99,9 +118,10 @@ def risk_free_daily(closes):
 
 # ---------------------------------------------------------------- build
 def main():
+    cutoff = latest_us_session()
     df = get_constituents()
     weights = get_weights()
-    closes = get_closes(df["yf"].tolist())
+    closes = get_closes(df["yf"].tolist(), cutoff)
     rf_d = risk_free_daily(closes)
 
     spark_idx = closes.index[-SPARK_N:]

@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from refresh import latest_us_session  # shared NYSE-calendar logic
+from market_calendar import latest_us_session  # shared NYSE-calendar logic
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data.js"

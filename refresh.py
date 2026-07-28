@@ -18,9 +18,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-import holidays
+from market_calendar import latest_us_session
 
 HERE = Path(__file__).resolve().parent
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -28,22 +27,9 @@ PNG = HERE / "sp500.png"
 DATA = HERE / "data.js"
 GIT_NAME = "Teoh, Min Wei"
 GIT_EMAIL = "mteoh3@gatech.edu"
-_ET = ZoneInfo("America/New_York")
-_NYSE = holidays.financial_holidays("NYSE")
 
 
 # --------------------------------------------------------------- market guard
-def latest_us_session(now_utc: dt.datetime | None = None) -> dt.date:
-    """Date of the most recently *completed* NYSE session (16:00 ET close passed)."""
-    et = (now_utc or dt.datetime.now(dt.timezone.utc)).astimezone(_ET)
-    d = et.date()
-    if et.time() < dt.time(16, 0):        # today's close hasn't happened yet
-        d -= dt.timedelta(days=1)
-    while d.weekday() >= 5 or d in _NYSE:  # walk back over weekend / holiday
-        d -= dt.timedelta(days=1)
-    return d
-
-
 def published_asof() -> dt.date | None:
     """The asOf date currently baked into data.js, or None if absent."""
     try:
@@ -78,10 +64,14 @@ def render_png():
 
 
 def publish() -> str:
-    """Commit + push page assets only when something actually changed.
+    """Commit + push page assets.
 
     Adds all tracked files (data.js + every .html page + treemap.js/.css); the
     binary snapshot/cache are gitignored. Daily runs typically only change data.js.
+
+    Note this pushes on every run: data.js embeds a `generated` timestamp, so the
+    diff is never empty even when no price moved. A commit here is therefore NOT
+    evidence the data advanced — assert_fresh() is what establishes that.
     """
     subprocess.run(["git", "add", "-A"], cwd=HERE, check=True)
     changed = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=HERE).returncode
@@ -106,8 +96,25 @@ def refresh(force: bool = False) -> str:
         print(f"[refresh] {reason}", file=sys.stderr)
     import fetch_data
     fetch_data.main()
+    assert_fresh()
     render_png()
     return publish()
+
+
+def assert_fresh() -> None:
+    """Fail loudly if the rebuild didn't actually advance to the latest session.
+
+    Without this a stale build is *silent*: it returns "published" and pushes a
+    commit containing nothing but a new `generated` timestamp. Raising here routes
+    it into ButlerPapa's _wrap, which pings the owner.
+    """
+    latest, have = latest_us_session(), published_asof()
+    if have != latest:
+        raise RuntimeError(
+            f"stale build: data.js asOf {have}, expected latest session {latest}. "
+            f"Upstream may not have posted the close yet — rerun, and if it "
+            f"persists check the closes.pkl cache and yfinance."
+        )
 
 
 if __name__ == "__main__":
