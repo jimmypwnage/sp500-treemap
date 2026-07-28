@@ -7,11 +7,21 @@ Tap a tile for a rich tooltip (3m/6m Sharpe/Sortino/Alpha/Beta/Vol grid + a tick
 vs-S&P sparkline); tap a sector header to zoom in. Built as a Telegram Mini App.
 
 ## Files
+- `market_calendar.py` — `latest_us_session()`: the most recently *completed* NYSE
+  session (16:00 ET + weekend/holiday walk-back). **The single source of truth for
+  every freshness decision** — cache expiry, bar truncation, the refresh guard and
+  the brief's gate all key off it. Lives in its own module so `fetch_data`,
+  `refresh` and `sp500_summary` share one definition without an import cycle.
 - `fetch_data.py` — data pipeline. Writes `data.js`.
-- `refresh.py` — orchestrator: fetch_data → render `sp500.png` → git push to Pages.
+- `refresh.py` — orchestrator: fetch_data → `assert_fresh()` → render `sp500.png` → git push.
 - `sp500_summary.py` — reads `data.js` → market DoD summary for the morning brief
   (`build_summary`, `caption_html`, `show_market_section` freshness gate). Imported
-  in-process by ButlerPapa (SP500_DIR on sys.path); reuses `refresh.latest_us_session`.
+  in-process by ButlerPapa (SP500_DIR on sys.path); reuses `market_calendar.latest_us_session`.
+- `test_refresh.py` — self-tests for the freshness logic (standalone, no pytest, no
+  network — `yf.download` is stubbed). Covers the 16:00 ET boundary, weekend/holiday
+  walk-back, cache expiry, partial-bar truncation, `assert_fresh`, and a **12-day
+  cycle walk** asserting every session is fetched exactly once. Run it after touching
+  anything date-related here.
 - `treemap.js` + `treemap.css` — **shared rendering engine** used by all pages. A page
   sets `window.CHART=<metric key>` (+ optional `window.NAV=true`) before loading data.js +
   treemap.js. Engine handles: colour (adaptive diverging clamp), squarify layout, tap-to-pin
@@ -26,7 +36,9 @@ vs-S&P sparkline); tap a sector header to zoom in. Built as a Telegram Mini App.
   `[tkr, sec, price, wt, dod, wow, sh3, sh6, sortino3, sortino6, alpha3, alpha6, beta3, beta6, vol3, vol6]`.
   Anything parsing it (e.g. `sp500_summary.py`) must use **index access**, not 6-tuple unpacking.
 - `sp500.png` — rendered snapshot (gitignored; what the Telegram bot sends).
-- `closes.pkl` — cached daily closes (gitignored; skips refetch if <4 days old).
+- `closes.pkl` — cached daily closes (gitignored). Reused **only when it already
+  contains `latest_us_session()`** — so same-day reruns are free, but a new close
+  always forces a refetch. Never gate this on a wall-clock day count (see Gotchas).
 - `mockup.html` — original standalone mockup with sample data (kept for reference).
 
 ## Hosting — GitHub Pages (Telegram Mini App)
@@ -44,8 +56,11 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 /Users/jimmyteoh/anaconda3/bin/python3 refresh.py            # guarded: skips if no new session
 /Users/jimmyteoh/anaconda3/bin/python3 refresh.py --force    # ignore guard, always rebuild
 /Users/jimmyteoh/anaconda3/bin/python3 fetch_data.py         # data only, no PNG/publish
+/Users/jimmyteoh/anaconda3/bin/python3 test_refresh.py       # freshness self-tests (no network)
 open index.html
 ```
+To recover from a poisoned cache (wrong prices baked into `closes.pkl`), delete it
+first — `--force` bypasses the *guard*, not the cache: `rm closes.pkl && python refresh.py --force`.
 
 ## Refresh triggers + market guard
 - **Daily refresh lives in ButlerPapa** (`core/scheduler.py` job `sp500_refresh`, 06:30 SGT,
@@ -53,12 +68,20 @@ open index.html
   pings the owner automatically; a guard-skip is silent.
 - **FinancePapa `/sp500`** only builds **on demand** when no `sp500.png` exists yet, and calls
   `refresh.py --force` so it always works (even on a weekend).
-- **`should_refresh()`** computes the latest completed NYSE session (US/Eastern + `holidays`
-  NYSE calendar) and compares to the `asOf` date already in `data.js`. If there's no newer
-  session it **returns before any network call** — this covers weekends AND US holidays.
-  Net effect on the 06:30 SGT schedule: refreshes **Tue–Sat SGT** (Mon–Fri US sessions),
-  skips **Sun/Mon SGT** and the morning after a US holiday.
-- `publish()` pushes only when `data.js` actually changed (no-op otherwise).
+- **`should_refresh()`** compares `latest_us_session()` to the `asOf` date already in
+  `data.js`. If there's no newer session it **returns before any network call** — this
+  covers weekends AND US holidays. Net effect on the 06:30 SGT schedule: refreshes
+  **Tue–Sat SGT** (Mon–Fri US sessions), skips **Sun/Mon SGT** and the morning after a
+  US holiday.
+- **`assert_fresh()`** runs after `fetch_data.main()` and raises unless the freshly
+  written `asOf` equals `latest_us_session()`. This exists because a stale build is
+  otherwise **completely silent** — it returns `published` and pushes a commit.
+  Raising routes it into ButlerPapa's `_wrap`, which pings the owner. If upstream
+  genuinely hasn't posted the close by 06:30 SGT this will alert on a yfinance lag;
+  that false positive is deliberate — prefer it to silence.
+- `publish()` pushes on **every** run: `data.js` embeds a `generated` timestamp, so
+  the diff is never empty. **A `data refresh` commit is not evidence the data
+  advanced** — check `asOf`, not the commit log.
 - `--force` (or `refresh(force=True)`) bypasses the guard — used by the on-demand build.
 - Dep: `holidays` (`holidays.financial_holidays("NYSE")`) + stdlib `zoneinfo`.
 
@@ -90,6 +113,20 @@ Tooltip shows a 3m/6m grid of all five metrics; the current page's metric row is
 `fetch_data.py`: `HIST_DAYS`, `W3/W6`, `SPARK_N`, `window_metrics()` are the knobs.
 
 ## Gotchas
+- **Never gate freshness on a wall-clock day count.** The cache originally expired on
+  `(today - tip).days <= 4`, which only ever refetched on day *5* — so the map refreshed
+  roughly once every five days regardless of how many sessions had closed. A calendar
+  delta says nothing about whether a session happened; compare to `latest_us_session()`.
+- **Never store an in-progress session's bar.** `yf.download` with `end=today+1` returns
+  a *partial* bar for a day still trading. Running the pipeline during US market hours
+  (SGT evening = ET morning) once recorded META's 10:02 ET quote of 602.97 as "Friday's
+  close" — the real close was 595.19. `get_closes()` now truncates to `<= cutoff`.
+  The knock-on was worse than the wrong price: stamping `asOf` with a not-yet-closed
+  session makes `should_refresh()` believe that day is already published, so the run
+  that *would* have fetched the real close skips. Friday's close was lost for 4 days.
+- Both of the above were silent — the job logged success and pushed commits throughout.
+  That's what `assert_fresh()` is for. If you add another freshness path, add a
+  post-condition too, and a case to `test_refresh.py`.
 - Do NOT fetch market caps via per-ticker `Ticker.fast_info` in a loop — 500
   requests trips `YFRateLimitError`, which also kills the bulk price download in
   the same run. Slickcharts weight replaces that entirely.
